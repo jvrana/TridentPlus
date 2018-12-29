@@ -1,0 +1,22 @@
+[[source]]
+url = "https://pypi.org/simple"
+verify_ssl = true
+name = "pypi"
+
+[packages]
+"primer3-py" = "*"
+pandas = "*"
+jdna = {path = "./../jdna"}
+tqdm = "*"
+pydent = {path = "./../trident"}
+dill = "*"
+intermine = "*"
+pyblast = {path = "./../pyblast"}
+pipenv = "*"
+fire = "*"
+
+[dev-packages]
+pytest = "*"
+
+[requires]
+python_version = "3.6"
