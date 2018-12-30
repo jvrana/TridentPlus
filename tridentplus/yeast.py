@@ -7,11 +7,13 @@ from Bio import SeqIO
 from Bio.Seq import Seq
 from Bio.SeqRecord import SeqRecord
 from intermine.webservice import Service
+from pydent.utils import make_async
+from primer3plus import Primer3Design
 
 here = os.path.abspath(os.path.dirname(__file__))
 data_dir = os.path.join(here, 'data')
-
 service = Service("https://yeastmine.yeastgenome.org:443/yeastmine/service")
+default_genome_path = os.path.join(data_dir, 'SCer.fasta')
 
 
 def _chromosome_list():
@@ -33,10 +35,6 @@ def _chromosome_sequence(identifier=None):
     if identifier:
         query.add_constraint("primaryIdentifier", "=", identifier, code="A")
     return query
-
-
-default_genome_path = os.path.join(data_dir, 'SCer.fasta')
-
 
 def yeast_genome(name=None, overwrite=False):
     """
@@ -145,22 +143,13 @@ def alignments_to_integration_sites(alignments):
             q1 = a1['query']
             q2 = a2['query']
 
-            print('{} {} {} -> {} {} {}'.format(s1['start'], s1['end'], s1['strand'], s2['start'], s2['end'],
-                                                s2['strand']))
-            print('{} {} {} -> {} {} {}'.format(q1['start'], q1['end'], q1['strand'], q2['start'], q2['end'],
-                                                q2['strand']))
-
             if q1['sequence_id'] != q2['sequence_id']:
-                print('REASON: diff queries')
                 continue
             if q1['start'] == q2['start']:
-                print('REASON: same qstart')
                 continue
             if s1['strand'] != s2['strand']:
-                print('REASON: diff strands')
                 continue
             if q1['end'] > q2['start']:
-                print("REASON: qend > qstart")
                 continue
 
             direction = None
@@ -243,6 +232,7 @@ def _aligner_to_integrations(aligner, integrant=None, template=None, min_homolog
             'right_homology_pos': '{}:{}-{}'.format(site[1]['subject']['name'], right[0], right[1]),
             'left_homology_range': left,
             'right_homology_range': right,
+            'flanking_bps': flanking_bps,
             'flank_left_range': flank_left,
             'flank_right_range': flank_right,
             'query_range': query_range,
@@ -261,14 +251,100 @@ def _aligner_to_integrations(aligner, integrant=None, template=None, min_homolog
     return integrations
 
 
-def genomic_integration(integrant: jdna.Sequence, min_homology=100, flanking_bps=500, max_distance=5000):
+def genomic_integration(integrant: jdna.Sequence, min_homology=100, flanking_bps=500, max_distance=5000, with_sequence=False, with_primers=False):
     alignments = align_to_genome([str(integrant)])
-    return _aligner_to_integrations(alignments, integrant=integrant, min_homology=min_homology,
+    results = _aligner_to_integrations(alignments, integrant=integrant, min_homology=min_homology,
                                     flanking_bps=flanking_bps, max_distance=max_distance)
+    return results
 
 
 def homologous_recombination(integrant: jdna.Sequence, template: jdna.Sequence, min_homology=100, flanking_bps=500,
                              max_distance=5000):
+    """
+    Simulate a homologous integration event.
+
+    :param integrant:
+    :type integrant:
+    :param template:
+    :type template:
+    :param min_homology:
+    :type min_homology:
+    :param flanking_bps:
+    :type flanking_bps:
+    :param max_distance:
+    :type max_distance:
+    :return:
+    :rtype:
+    """
     alignments = align([str(integrant)], [str(template)])
-    return _aligner_to_integrations(alignments, integrant=integrant, template=template, min_homology=min_homology,
+    results = _aligner_to_integrations(alignments, integrant=integrant, template=template, min_homology=min_homology,
                                     flanking_bps=flanking_bps, max_distance=max_distance)
+    return results
+
+
+
+def pick_primers(template, size_range, target=None, primer_list=None, max_anneal_len=36, ):
+    if primer_list is None:
+        primer_list = primers.cache_primers(production, overwrite=False)
+    bindings = primers.primer_bindings(primer_list, str(template))
+    bindings_by_annealing = {}
+    for b in bindings:
+        bindings_by_annealing.setdefault(b['annealing'][-max_anneal_len:].upper(), []).append(b)
+    fwd = [b['annealing'][-max_anneal_len:] for b in bindings if b['direction'] == 1]
+    rev = [b['annealing'][-max_anneal_len:] for b in bindings if b['direction'] == -1]
+
+    print("Found {} forward bindings and {} reverse bindings".format(len(fwd), len(rev)))
+
+    pairs = list(product(fwd, rev))
+    designer = Primer3Design()
+
+    @make_async(10)
+    def choose_primer_pairs(pairs):
+        _results = []
+        for f, r in pairs:
+            results = designer.check_pcr_primers(str(template), f, r, size_range=size_range, target=target,
+                                                 max_iterations=15)
+            _results.append(results)
+        return _results
+
+    all_results = choose_primer_pairs(pairs)
+
+    pairs, explain = Primer3Design.combine_results(all_results)
+
+    for pair in pairs:
+        left_bindings = bindings_by_annealing[pair['LEFT']['SEQUENCE'].upper()]
+        right_bindings = bindings_by_annealing[pair['RIGHT']['SEQUENCE'].upper()]
+        pair['LEFT']['bindings'] = left_bindings
+        pair['RIGHT']['bindings'] = right_bindings
+
+    return pairs, explain
+
+
+def get_integration_sequence(integration_results, pick_left_qc_primers=False, pick_right_qc_primers=False, size_range=None):
+    """Parse an integration result to a :class:`jdna.Sequence`. Optionally pick qc primers."""
+
+    flank_left = jdna.Sequence(str(integration_results['sequence']['flank_left']))
+    flank_left.annotate(None, None, integration_results['subject_name'])
+
+    left = jdna.Sequence(str(integration_results['sequence']['left_homology']))
+    left.annotate(None, None, integration_results['left_homology_pos'])
+
+    flank_right = jdna.Sequence(str(integration_results['sequence']['flank_right']))
+    flank_right.annotate(None, None, integration_results['subject_name'])
+
+    right = jdna.Sequence(str(integration_results['sequence']['right_homology']))
+    right.annotate(None, None, integration_results['right_homology_pos'])
+
+    integration_seq = flank_left + left + integration_results['sequence']['integrant'] + right + flank_right
+
+    flanking_bps = integration_results['flanking_bps']
+
+    left_qc_primers = []
+    right_qc_primers = []
+    if pick_left_qc_primers:
+        left_target = (flanking_bps - 10, 20)
+        left_qc_primers = pick_primers(integration_seq[:flanking_bps * 2], size_range, target=left_target)
+    if pick_right_qc_primers:
+        right_target = (flanking_bps - 10, 20)
+        right_qc_primers = pick_primers(integration_seq[-flanking_bps * 2:], size_range, target=right_target)
+    return integration_seq, left_qc_primers, right_qc_primers

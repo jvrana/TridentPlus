@@ -4,13 +4,20 @@ import jdna
 import pandas as pd
 import primer3
 from pydent.browser import Browser
+from pydent import AqSession
 from collections import namedtuple
 from collections import OrderedDict
 from warnings import warn
 from tridentplus.utils.saved_browser import SavedBrowser
+import os
+from tqdm import tqdm
+from itertools import product
+from primer3plus import Primer3Design
 
 reverse_complement = jdna.alphabet.AmbiguousDNA.rc
 named_primer = namedtuple('Primer', ['sequence', 'name'])
+here = os.path.abspath(os.path.dirname(__file__))
+data_dir = os.path.join(here, 'data')
 
 
 def _valid_dna_sequence(seq):
@@ -64,9 +71,11 @@ def load_primers(browser: Browser, verbose=False) -> list:
     return valid_primers(primers, verbose)
 
 
-def cache_primers(session, filepath) -> list:
+def cache_primers(session, filepath=None, overwrite=False) -> list:
+    if filepath is None:
+        filepath = os.path.join(data_dir, 'primers.pkl')
     with SavedBrowser(filepath, session) as browser:
-        if browser.model_cache:
+        if browser.model_cache and not overwrite:
             primer_type = browser.cached_where('SampleType', {'name': 'Primer'})[0]
             primers = browser.cached_where('Sample', {'sample_type_id': primer_type.id})
         else:
@@ -211,3 +220,37 @@ def primer_binding_df(primers: list, template: str, min_bases=10) -> list:
     rows = primer_bindings(primers, template, min_bases=min_bases)
     if rows:
         return pd.DataFrame(rows, columns=rows[0].keys())
+
+
+def pick_primers(session: AqSession, template: str, size_range: tuple, target=None, primer_list=None, max_anneal_len=36, ):
+    if primer_list is None:
+        primer_list = cache_primers(session)
+    bindings = primer_bindings(primer_list, str(template))
+    bindings_by_annealing = {}
+    for b in bindings:
+        bindings_by_annealing.setdefault(b['annealing'][-max_anneal_len:].upper(), []).append(b)
+    fwd = [b['annealing'][-max_anneal_len:] for b in bindings if b['direction'] == 1]
+    rev = [b['annealing'][-max_anneal_len:] for b in bindings if b['direction'] == -1]
+
+    print("Found {} forward bindings and {} reverse bindings".format(len(fwd), len(rev)))
+
+    pairs = list(product(fwd, rev))
+    designer = Primer3Design()
+    all_results = []
+    reasons = []
+    for f, r in tqdm(pairs, ):
+        results = designer.check_pcr_primers(str(template), f, r, size_range=size_range, target=target,
+                                             max_iterations=15)
+        if results[0]:
+            all_results += list(results[0].values())
+        else:
+            reasons.append(results[1])
+    all_results = sorted(all_results, key=lambda x: x['PAIR']['PENALTY'])
+
+    # add original binding information
+    for r in all_results:
+        left_bindings = bindings_by_annealing[r['LEFT']['SEQUENCE'].upper()]
+        right_bindings = bindings_by_annealing[r['RIGHT']['SEQUENCE'].upper()]
+        r['LEFT']['bindings'] = left_bindings
+        r['RIGHT']['name'] = right_bindings
+    return all_results

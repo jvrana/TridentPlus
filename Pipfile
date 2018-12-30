@@ -13,7 +13,7 @@ dill = "*"
 intermine = "*"
 pyblast = {path = "./../pyblast"}
 pipenv = "*"
-fire = "*"
+"primer3plus" = {path = "./../primer3-py-plus"}
 
 [dev-packages]
 pytest = "*"
