@@ -4,19 +4,23 @@ verify_ssl = true
 name = "pypi"
 
 [packages]
-"primer3-py" = "*"
 pandas = "*"
-jdna = {path = "./../jdna"}
 tqdm = "*"
-pydent = {path = "./../trident"}
 dill = "*"
 intermine = "*"
-pyblast = {path = "./../pyblast"}
 pipenv = "*"
+"primer3-py" = "*"
+jdna = {path = "./../jdna"}
+pydent = {path = "./../trident"}
+pyblast = {path = "./../pyblast"}
 "primer3plus" = {path = "./../primer3-py-plus"}
 
 [dev-packages]
 pytest = "*"
+pytest-cov = "*"
+sphinx = "*"
+guzzle-sphinx-theme = "*"
+docformatter = "*"
 
 [requires]
 python_version = "3.6"

@@ -1,16 +1,19 @@
+"""
+Primers
+"""
+
 import re
 
 import jdna
 import pandas as pd
 import primer3
 from pydent.browser import Browser
-from pydent import AqSession
 from collections import namedtuple
 from collections import OrderedDict
 from warnings import warn
 from tridentplus.utils.saved_browser import SavedBrowser
 import os
-from tqdm import tqdm
+from pydent.utils import make_async
 from itertools import product
 from primer3plus import Primer3Design
 
@@ -222,9 +225,9 @@ def primer_binding_df(primers: list, template: str, min_bases=10) -> list:
         return pd.DataFrame(rows, columns=rows[0].keys())
 
 
-def pick_primers(session: AqSession, template: str, size_range: tuple, target=None, primer_list=None, max_anneal_len=36, ):
+def pick_pcr_primers(session, template, size_range, target=None, primer_list=None, max_anneal_len=36, max_iterations=5):
     if primer_list is None:
-        primer_list = cache_primers(session)
+        primer_list = cache_primers(session, overwrite=False)
     bindings = primer_bindings(primer_list, str(template))
     bindings_by_annealing = {}
     for b in bindings:
@@ -236,21 +239,24 @@ def pick_primers(session: AqSession, template: str, size_range: tuple, target=No
 
     pairs = list(product(fwd, rev))
     designer = Primer3Design()
-    all_results = []
-    reasons = []
-    for f, r in tqdm(pairs, ):
-        results = designer.check_pcr_primers(str(template), f, r, size_range=size_range, target=target,
-                                             max_iterations=15)
-        if results[0]:
-            all_results += list(results[0].values())
-        else:
-            reasons.append(results[1])
-    all_results = sorted(all_results, key=lambda x: x['PAIR']['PENALTY'])
 
-    # add original binding information
-    for r in all_results:
-        left_bindings = bindings_by_annealing[r['LEFT']['SEQUENCE'].upper()]
-        right_bindings = bindings_by_annealing[r['RIGHT']['SEQUENCE'].upper()]
-        r['LEFT']['bindings'] = left_bindings
-        r['RIGHT']['name'] = right_bindings
-    return all_results
+    @make_async(10)
+    def _check_primers(pairs):
+        _results = []
+        for f, r in pairs:
+            results = designer.check_pcr_primers(str(template), f, r, size_range=size_range, target=target,
+                                                 max_iterations=max_iterations)
+            _results.append(results)
+        return _results
+
+    all_results = _check_primers(pairs)
+
+    pairs, explain = Primer3Design.combine_results(all_results)
+
+    for pair in pairs:
+        left_bindings = bindings_by_annealing[pair['LEFT']['SEQUENCE'].upper()]
+        right_bindings = bindings_by_annealing[pair['RIGHT']['SEQUENCE'].upper()]
+        pair['LEFT']['bindings'] = left_bindings
+        pair['RIGHT']['bindings'] = right_bindings
+
+    return pairs, explain
