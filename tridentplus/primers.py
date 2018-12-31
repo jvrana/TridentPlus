@@ -225,19 +225,35 @@ def primer_binding_df(primers: list, template: str, min_bases=10) -> list:
         return pd.DataFrame(rows, columns=rows[0].keys())
 
 
-def pick_pcr_primers(session, template, size_range, target=None, primer_list=None, max_anneal_len=36, max_iterations=5):
-    if primer_list is None:
-        primer_list = cache_primers(session, overwrite=False)
-    bindings = primer_bindings(primer_list, str(template))
+def filter_bindings_by_target_range(bindings, target_range):
+    fwd = [b for b in bindings if b['direction'] == 1]
+    rev = [b for b in bindings if b['direction'] == -1]
+    if target_range is not None:
+        fwd = [b for b in fwd if b['abs_end'] < target_range[0]]
+        rev = [b for b in rev if b['abs_start'] > target_range[1]]
+    return fwd, rev
+
+def filter_binding_pairs_by_size(pairs, product_size):
+    valid_pairs = []
+    for b1, b2 in pairs:
+        size = b2['abs_start'] - b1['abs_start']
+        if product_size[0] <= size and size <= product_size[1]:
+            valid_pairs.append((b1, b2))
+    return valid_pairs
+
+
+# TODO: change to use a list of strings
+def pick_pcr_primers(primers, template, size_range, target=None, max_anneal_len=36, max_iterations=5):
+    bindings = primer_bindings(primers, str(template))
+    fwd, rev = filter_bindings_by_target_range(bindings, target)
+    pairs = list(product(fwd, rev))
+    pairs = filter_binding_pairs_by_size(pairs, size_range)
     bindings_by_annealing = {}
     for b in bindings:
         bindings_by_annealing.setdefault(b['annealing'][-max_anneal_len:].upper(), []).append(b)
-    fwd = [b['annealing'][-max_anneal_len:] for b in bindings if b['direction'] == 1]
-    rev = [b['annealing'][-max_anneal_len:] for b in bindings if b['direction'] == -1]
 
-    print("Found {} forward bindings and {} reverse bindings".format(len(fwd), len(rev)))
+    annealing_pairs = [(b1['annealing'][-max_anneal_len:], b2['annealing'][-max_anneal_len:]) for b1, b2 in pairs]
 
-    pairs = list(product(fwd, rev))
     designer = Primer3Design()
 
     @make_async(10)
@@ -249,14 +265,14 @@ def pick_pcr_primers(session, template, size_range, target=None, primer_list=Non
             _results.append(results)
         return _results
 
-    all_results = _check_primers(pairs)
+    all_results = _check_primers(annealing_pairs)
 
-    pairs, explain = Primer3Design.combine_results(all_results)
+    rpairs, explain = Primer3Design.combine_results(all_results)
 
-    for pair in pairs:
+    for pair in rpairs:
         left_bindings = bindings_by_annealing[pair['LEFT']['SEQUENCE'].upper()]
         right_bindings = bindings_by_annealing[pair['RIGHT']['SEQUENCE'].upper()]
         pair['LEFT']['bindings'] = left_bindings
         pair['RIGHT']['bindings'] = right_bindings
 
-    return pairs, explain
+    return rpairs, explain

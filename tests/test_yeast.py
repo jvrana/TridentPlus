@@ -1,6 +1,7 @@
 import jdna
 import pytest
 
+from tridentplus.primers import cache_primers
 from tridentplus.organisms import Yeast
 
 
@@ -81,9 +82,10 @@ def test_pick_qc_primers_for_interagration(session, test_plasmid):
 
     seq = jdna.Sequence(test_plasmid)
     integrations = Yeast.genomic_integration(seq)
+    primer_list = cache_primers(session)
     for integration in integrations:
-        Yeast.integration_qc_primers(integration, size_range=(400, 2000), session=session, pick_left=True, pick_right=True)
-
+        r = Yeast.integration_qc_primers(integration, primer_list, size_range=(400, 2500), session=session, pick_left=True, pick_right=True)
+        print(len(r[1]))
 
 def test_logger(session):
     session.Sample.one()

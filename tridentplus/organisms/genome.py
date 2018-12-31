@@ -263,7 +263,7 @@ class BlastUtils(object):
     # TODO: allow a provided list of primers to select from.
     # TODO: allow a design of left or right primers
     @classmethod
-    def integration_qc_primers(cls, integration_results, size_range, session: AqSession, pick_left=False,
+    def integration_qc_primers(cls, integration_results, primer_list, size_range, session: AqSession, pick_left=False,
                                pick_right=False):
 
         """Parse an integration result into a :class:`jdna.Sequence` instance and select PCR primers
@@ -289,12 +289,15 @@ class BlastUtils(object):
         left_qc_primers = []
         right_qc_primers = []
         if pick_left:
-            left_target = (flanking_bps - 10, 20)
-            left_qc_primers = pick_pcr_primers(session, integration_seq[:flanking_bps * 2], size_range,
+            left_homology_len = len(integration_results['sequence']['left_homology'])
+            left_target = (flanking_bps, left_homology_len)
+            left_qc_primers = pick_pcr_primers(primer_list, integration_seq[:flanking_bps * 2], size_range,
                                                target=left_target)
         if pick_right:
-            right_target = (flanking_bps - 10, 20)
-            right_qc_primers = pick_pcr_primers(session, integration_seq[-flanking_bps * 2:], size_range,
+            _integration_seq = integration_seq[-flanking_bps * 2:]
+            right_homology_len = len(integration_results['sequence']['right_homology'])
+            right_target = (len(_integration_seq) - flanking_bps - right_homology_len, right_homology_len)
+            right_qc_primers = pick_pcr_primers(primer_list, _integration_seq, size_range,
                                                 target=right_target)
         return integration_seq, left_qc_primers, right_qc_primers
 
